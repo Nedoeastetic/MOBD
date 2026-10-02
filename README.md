@@ -320,3 +320,406 @@ GROUP BY o.id;
 psql -U <пользователь> -d <база> -f marketplace_schema.sql
 ```
 
+```
+-- ============================================
+-- ЛАБОРАТОРНАЯ РАБОТА №1
+-- База данных интернет-маркетплейса
+-- PostgreSQL / Supabase
+-- ============================================
+
+
+-- ============================================
+-- 1. УДАЛЕНИЕ СТАРЫХ ТАБЛИЦ
+-- ============================================
+
+DROP TABLE IF EXISTS order_status_history CASCADE;
+DROP TABLE IF EXISTS shipments CASCADE;
+DROP TABLE IF EXISTS favorites CASCADE;
+DROP TABLE IF EXISTS reviews CASCADE;
+DROP TABLE IF EXISTS payments CASCADE;
+DROP TABLE IF EXISTS order_items CASCADE;
+DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS addresses CASCADE;
+DROP TABLE IF EXISTS products CASCADE;
+DROP TABLE IF EXISTS categories CASCADE;
+DROP TABLE IF EXISTS sellers CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+
+
+-- ============================================
+-- 2. USERS — пользователи
+-- ============================================
+
+CREATE TABLE users (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    full_name VARCHAR(150) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    phone VARCHAR(30) UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (length(trim(full_name)) > 0),
+    CHECK (length(trim(email)) > 0)
+);
+
+
+-- ============================================
+-- 3. SELLERS — продавцы
+-- ============================================
+
+CREATE TABLE sellers (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_name VARCHAR(200) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    phone VARCHAR(30) UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (length(trim(company_name)) > 0)
+);
+
+
+-- ============================================
+-- 4. CATEGORIES — категории
+-- Иерархическая связь:
+-- categories.parent_id → categories.id
+-- ============================================
+
+CREATE TABLE categories (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    parent_id BIGINT,
+    name VARCHAR(150) NOT NULL UNIQUE,
+
+    CONSTRAINT categories_parent_fk
+        FOREIGN KEY (parent_id)
+        REFERENCES categories(id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE,
+
+    CHECK (length(trim(name)) > 0)
+);
+
+
+-- ============================================
+-- 5. PRODUCTS — товары
+-- ============================================
+
+CREATE TABLE products (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    seller_id BIGINT NOT NULL,
+    category_id BIGINT NOT NULL,
+    title VARCHAR(250) NOT NULL,
+    description TEXT,
+    price NUMERIC(12, 2) NOT NULL,
+    stock_quantity INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT products_seller_fk
+        FOREIGN KEY (seller_id)
+        REFERENCES sellers(id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE,
+
+    CONSTRAINT products_category_fk
+        FOREIGN KEY (category_id)
+        REFERENCES categories(id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE,
+
+    CHECK (price > 0),
+    CHECK (stock_quantity >= 0),
+    CHECK (length(trim(title)) > 0)
+);
+
+
+-- ============================================
+-- 6. ADDRESSES — адреса пользователей
+-- ============================================
+
+CREATE TABLE addresses (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    country VARCHAR(100) NOT NULL,
+    city VARCHAR(100) NOT NULL,
+    street VARCHAR(200) NOT NULL,
+    postal_code VARCHAR(20) NOT NULL,
+    apartment VARCHAR(50),
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT addresses_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+
+    CHECK (length(trim(country)) > 0),
+    CHECK (length(trim(city)) > 0),
+    CHECK (length(trim(street)) > 0)
+);
+
+
+-- ============================================
+-- 7. ORDERS — заказы
+-- ============================================
+
+CREATE TABLE orders (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    shipping_address_id BIGINT,
+    status VARCHAR(30) NOT NULL DEFAULT 'new',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT orders_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE,
+
+    CONSTRAINT orders_address_fk
+        FOREIGN KEY (shipping_address_id)
+        REFERENCES addresses(id)
+        ON DELETE SET NULL
+        ON UPDATE CASCADE,
+
+    CHECK (
+        status IN (
+            'new',
+            'paid',
+            'processing',
+            'shipped',
+            'delivered',
+            'cancelled'
+        )
+    )
+);
+
+
+-- ============================================
+-- 8. ORDER_ITEMS — позиции заказа
+-- Реализует M:N:
+-- orders ↔ products
+-- ============================================
+
+CREATE TABLE order_items (
+    order_id BIGINT NOT NULL,
+    product_id BIGINT NOT NULL,
+    quantity INTEGER NOT NULL,
+    unit_price NUMERIC(12, 2) NOT NULL,
+
+    PRIMARY KEY (order_id, product_id),
+
+    CONSTRAINT order_items_order_fk
+        FOREIGN KEY (order_id)
+        REFERENCES orders(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+
+    CONSTRAINT order_items_product_fk
+        FOREIGN KEY (product_id)
+        REFERENCES products(id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE,
+
+    CHECK (quantity > 0),
+    CHECK (unit_price > 0)
+);
+
+
+-- ============================================
+-- 9. PAYMENTS — платежи
+-- ============================================
+
+CREATE TABLE payments (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id BIGINT NOT NULL UNIQUE,
+    amount NUMERIC(12, 2) NOT NULL,
+    payment_method VARCHAR(30) NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'pending',
+    paid_at TIMESTAMPTZ,
+
+    CONSTRAINT payments_order_fk
+        FOREIGN KEY (order_id)
+        REFERENCES orders(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+
+    CHECK (amount > 0),
+
+    CHECK (
+        payment_method IN (
+            'card',
+            'bank_transfer',
+            'cash_on_delivery'
+        )
+    ),
+
+    CHECK (
+        status IN (
+            'pending',
+            'paid',
+            'failed',
+            'refunded'
+        )
+    )
+);
+
+
+-- ============================================
+-- 10. REVIEWS — отзывы
+-- ============================================
+
+CREATE TABLE reviews (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    product_id BIGINT NOT NULL,
+    rating INTEGER NOT NULL,
+    comment TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT reviews_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+
+    CONSTRAINT reviews_product_fk
+        FOREIGN KEY (product_id)
+        REFERENCES products(id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE,
+
+    CHECK (rating BETWEEN 1 AND 5),
+
+    UNIQUE (user_id, product_id)
+);
+
+
+-- ============================================
+-- 11. FAVORITES — избранные товары
+-- ============================================
+
+CREATE TABLE favorites (
+    user_id BIGINT NOT NULL,
+    product_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (user_id, product_id),
+
+    CONSTRAINT favorites_user_fk
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+
+    CONSTRAINT favorites_product_fk
+        FOREIGN KEY (product_id)
+        REFERENCES products(id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE
+);
+
+
+-- ============================================
+-- 12. SHIPMENTS — доставки
+-- ============================================
+
+CREATE TABLE shipments (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id BIGINT NOT NULL UNIQUE,
+    tracking_number VARCHAR(100) UNIQUE,
+    carrier VARCHAR(100) NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'preparing',
+    shipped_at TIMESTAMPTZ,
+    delivered_at TIMESTAMPTZ,
+
+    CONSTRAINT shipments_order_fk
+        FOREIGN KEY (order_id)
+        REFERENCES orders(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+
+    CHECK (
+        status IN (
+            'preparing',
+            'shipped',
+            'in_transit',
+            'delivered',
+            'returned'
+        )
+    ),
+
+    CHECK (length(trim(carrier)) > 0)
+);
+
+
+-- ============================================
+-- 13. ORDER_STATUS_HISTORY — история статусов
+-- ============================================
+
+CREATE TABLE order_status_history (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id BIGINT NOT NULL,
+    status VARCHAR(30) NOT NULL,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT order_status_history_order_fk
+        FOREIGN KEY (order_id)
+        REFERENCES orders(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+
+    CHECK (
+        status IN (
+            'new',
+            'paid',
+            'processing',
+            'shipped',
+            'delivered',
+            'cancelled'
+        )
+    )
+);
+
+
+-- ============================================
+-- 14. ИНДЕКСЫ
+-- ============================================
+
+CREATE INDEX idx_products_seller_id
+    ON products(seller_id);
+
+CREATE INDEX idx_products_category_id
+    ON products(category_id);
+
+CREATE INDEX idx_addresses_user_id
+    ON addresses(user_id);
+
+CREATE INDEX idx_orders_user_id
+    ON orders(user_id);
+
+CREATE INDEX idx_orders_created_at
+    ON orders(created_at);
+
+CREATE INDEX idx_order_items_product_id
+    ON order_items(product_id);
+
+CREATE INDEX idx_reviews_product_id
+    ON reviews(product_id);
+
+CREATE INDEX idx_favorites_product_id
+    ON favorites(product_id);
+
+CREATE INDEX idx_order_status_history_order_id
+    ON order_status_history(order_id);
+
+
+-- ============================================
+-- 15. ПРОВЕРКА СОЗДАННЫХ ТАБЛИЦ
+-- ============================================
+
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+ORDER BY table_name;
+```
+
